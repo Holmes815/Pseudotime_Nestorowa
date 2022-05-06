@@ -1,0 +1,148 @@
+---
+title: "Nestorowa_Pseudotiempo"
+author: "Alejandro Alarcón del Carmen"
+date: "6/5/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Single Cell RNAseq
+
+Este es un pipeline diseñado apra analizar datos de scRNAseq cubriendo los puntos principales del análisis:
+
+1. -Obtención de datos
+2. -Anotación de los datos (asignación de GENE IDs e identificadores de cada gen)
+3. -Filtrado de datos
+4. -Normalización de datos
+5. -Reducción de dimensiones
+6. -Formación de clusters (mediante TSNE)
+7. -Anotación de clusters e identificación de subtipos celulares
+8. -Análisis de trayectoria
+
+### Obtención de datos 
+Librerias necesarias
+
+
+```{r library}
+library(scRNAseq)
+library(AnnotationHub)
+```
+# Importe de datos y generación de la matriz de cuentas.
+```{r singlecell}
+sce.nest<- NestorowaHSCData()
+```
+### Anotación de cada gen conforme al genoma de ratón
+```{r anotation}
+ens.mm.v97<- AnnotationHub()[["AH73905"]]
+anno <- select(ens.mm.v97, keys=rownames(sce.nest), 
+               keytype="GENEID", columns=c("SYMBOL", "SEQNAME"))
+rowData(sce.nest) <- anno[match(rownames(sce.nest), anno$GENEID),]
+```
+# Visualizar el set
+```{r visualization}
+sce.nest
+```
+### Filtrado de datos
+```{r filtering}
+library(scater)
+stats <- perCellQCMetrics(sce.nest)
+qc<- quickPerCellQC(stats, percent_subsets = "altexps_ERCC_percent")
+sce.nest<-sce.nest[,!qc$discard]
+```
+### Normalización de datos
+```{r normalization}
+library(scran)
+set.seed(101000110)
+clusters <- quickCluster(sce.nest)
+sce.nest <- computeSumFactors(sce.nest, clusters=clusters)
+sce.nest <- logNormCounts(sce.nest)
+sce.nest
+```
+# Modelado de varianza
+```{r varianza}
+set.seed(00010101)
+dec.nest <- modelGeneVarWithSpikes(sce.nest, "ERCC")
+top.nest <- getTopHVGs(dec.nest, prop=0.1)
+```
+### Reducción de dimensiones
+```{r dimension}
+set.seed(101010011)
+sce.nest <- denoisePCA(sce.nest, technical=dec.nest, subset.row=top.nest)
+sce.nest <- runTSNE(sce.nest, dimred="PCA")
+```
+### Formación de cluster y TSNE
+```{r TSNE}
+snn.gr <- buildSNNGraph(sce.nest, use.dimred="PCA")
+colLabels(sce.nest) <- factor(igraph::cluster_walktrap(snn.gr)$membership)
+```
+```{r TSNEplot, echo=FALSE}
+plotTSNE(sce.nest, colour_by="label")
+```
+
+### Detección de genes marcadores en los grupos o clusters
+```{r markers}
+markers <- findMarkers(sce.nest, colLabels(sce.nest), 
+                       test.type="wilcox", direction="up", lfc=0.5,
+                       row.data=rowData(sce.nest)[,"SYMBOL",drop=FALSE])
+markers$`8`
+```
+Esta función nos permite conocer los genes marcadores específicos de cada cluster de células, estos genes distintivos pueden permitir la formulación de hipotesis como la que se requiere para el siguiente paso del análisis, la creación de un psudotiempo para definir los estados de diferenciación de cada uno de los clusters.
+En el cuadro de código anterior podemos observar genes marcadores espécificos de eritrocitos lo que nos brinda una identidad mucho más diferenciada.
+
+### Asignación de nombre a cada cluster de acuerdo a sus genes marcadors: identidad celular
+```{r identify}
+library(SingleR)
+mm.ref<- MouseRNAseqData()
+renamed <- sce.nest
+rownames(renamed)<- uniquifyFeatureNames(rownames(renamed), 
+                                         rowData(sce.nest)$ SYMBOL)
+label<- SingleR(renamed, mm.ref, labels = mm.ref$label.fine)
+```
+
+### Dibujando línea de trayectoría celular.
+```{r trayectoria, echo=FALSE}
+library(scater)
+by.cluster <- aggregateAcrossCells(sce.nest, ids=colLabels(sce.nest))
+centroids <- reducedDim(by.cluster, "PCA")
+library(TSCAN)
+mst <- createClusterMST(centroids, clusters=NULL)
+mst
+line.data <- reportEdges(by.cluster, mst=mst, clusters=NULL, use.dimred="TSNE")
+
+plotTSNE(sce.nest, colour_by="label") + 
+  geom_line(data=line.data, mapping=aes(x=dim1, y=dim2, group=edge))
+```
+
+El siguiente paso es complicado ya que la selección del flujo de este
+pseudotiempo o trayectoria, se debe elegir el punto de partida o el punto más
+basal utilizando conocimiento biológico sobre el estado de pluripotencia de 
+cada grupo celular representado en los clusters. En este ejercicio se eligio
+uno de los puntos finales del arbol como punto de inicio.
+
+```{r pseudotime, echo=FALSE}
+map.tscan <- mapCellsToEdges(sce.nest, mst=mst, use.dimred="PCA")
+tscan.pseudo <- orderCells(map.tscan, mst)
+head(tscan.pseudo)
+common.pseudo <- averagePseudotime(tscan.pseudo) 
+plotTSNE(sce.nest, colour_by=I(common.pseudo), 
+         text_by="label", text_colour="red") +
+  geom_line(data=line.data, mapping=aes(x=dim1, y=dim2, group=edge))
+```
+
+### Caracterización de las trayectorias y lo cambios de los genes a traves del pseudotiempo
+
+```{r character, echo=FALSE}
+library(TSCAN)
+pseudo<- testPseudotime(sce.nest, pseudotime = tscan.pseudo[,1])[[1]]
+pseudo$SYMBOL <- rowData(sce.nest)$SYMBOL
+sorted<-pseudo[order(pseudo$p.value),]
+sce.nest$TSCAN.first <- pathStat(tscan.pseudo)[,1]
+up.left <- sorted[sorted$logFC < 0,]
+head(up.left, 10)
+best<- head(up.left$SYMBOL,10)
+plotExpression(sce.nest, features = best, swap_rownames = "SYMBOL",
+               x ="TSCAN.first", colour_by = "label")
+```
