@@ -46,15 +46,13 @@ markers <- findMarkers(sce.nest, colLabels(sce.nest),
                        test.type="wilcox", direction="up", lfc=0.5,
                        row.data=rowData(sce.nest)[,"SYMBOL",drop=FALSE])
 #En este caso específico se pueden identificar genes relacionados con la
-#identiad celular, por ejemplo Car2 y Hebp1 marcan que el cluster 8 es 
-#de precursores de eritrocitos
-markers$`8`
+#identiad celular, por ejemplo Plac8 y Ctsg marcan que el cluster 4 
+#se compone de linaje con identidad mieloide.
+markers$`4`
 #Proceso de anotación de los clusters, asignación de identidad
 #celular
 library(SingleR)
 mm.ref<- MouseRNAseqData()
-#Cambiamos el número de cluster por el nombre de identidad
-#celular asignado
 renamed <- sce.nest
 rownames(renamed)<- uniquifyFeatureNames(rownames(renamed), 
                                          rowData(sce.nest)$ SYMBOL)
